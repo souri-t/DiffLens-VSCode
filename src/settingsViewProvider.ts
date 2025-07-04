@@ -783,8 +783,9 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
                             message,
                             displayText: `${date} (${shortHash}) ${message}`
                         };
-                    });
-                console.log('Commit history via git command:', commitHistory.length, 'commits');
+                    })
+                    .slice(1); // 最新コミット（インデックス0）を除外
+                console.log('Commit history via git command:', commitHistory.length, 'commits (excluding latest)');
             } catch (error) {
                 console.log('Failed to get commit history via git command:', error);
                 // If git command fails, try VS Code API as backup
@@ -801,8 +802,8 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
                                 message,
                                 displayText: `${date} (${shortHash}) ${message}`
                             };
-                        });
-                        console.log('Commit history via VS Code API:', commitHistory.length, 'commits');
+                        }).slice(1); // 最新コミット（インデックス0）を除外
+                        console.log('Commit history via VS Code API:', commitHistory.length, 'commits (excluding latest)');
                     } catch (apiError) {
                         console.log('Failed to get commit history via VS Code API:', apiError);
                     }
