@@ -18,6 +18,8 @@ interface Repository {
 	diff(cached?: boolean): Promise<Change[]>;
 	diffWith(ref: string, path?: string): Promise<Change[]>;
 	diffBetween(ref1: string, ref2: string, path?: string): Promise<Change[]>;
+	getBranch?(name: string): Promise<Branch>;
+	getBranches?(query: any): Promise<any[]>;
 }
 
 interface RepositoryState {
@@ -167,6 +169,68 @@ async function getGitRepository(workspaceFolder: vscode.WorkspaceFolder): Promis
 	} catch (error) {
 		console.log('Error getting git repository:', error);
 		return undefined;
+	}
+}
+
+// Get remote branches mapping (commit hash -> branch names) using Git API
+async function getRemoteBranchMapping(repository: any): Promise<Map<string, string[]>> {
+	const remoteBranchMap = new Map<string, string[]>();
+	
+	try {
+		console.log('Getting remote branch mapping via Git API...');
+		
+		// Check if getBranches method exists
+		if (typeof repository.getBranches === 'function') {
+			try {
+				// Get remote branches
+				const remoteBranches = await repository.getBranches({ remote: true, count: 50 });
+				
+				remoteBranches
+					.filter((ref: any) => ref.type === 1 && ref.name && ref.commit) // RefType.RemoteHead = 1
+					.forEach((ref: any) => {
+						const branchName = ref.name.replace(/^origin\//, ''); // Remove origin/ prefix for display
+						const commit = ref.commit;
+						
+						if (!remoteBranchMap.has(commit)) {
+							remoteBranchMap.set(commit, []);
+						}
+						remoteBranchMap.get(commit)!.push(branchName);
+					});
+
+				console.log('Found remote branches via Git API:', remoteBranchMap.size, 'unique commits');
+				return remoteBranchMap;
+			} catch (branchError) {
+				console.log('Error getting remote branches:', branchError);
+				return remoteBranchMap;
+			}
+		} else {
+			console.log('getBranches method not available in Git API');
+			
+			// Alternative approach: try to get refs directly if available
+			if (repository.state && repository.state.refs) {
+				console.log('Trying to get remote refs from repository state...');
+				const refs = repository.state.refs;
+				refs
+					.filter((ref: any) => ref.name && ref.name.startsWith('refs/remotes/') && ref.commit)
+					.forEach((ref: any) => {
+						const branchName = ref.name.replace(/^refs\/remotes\/origin\//, '');
+						const commit = ref.commit;
+						
+						if (!remoteBranchMap.has(commit)) {
+							remoteBranchMap.set(commit, []);
+						}
+						remoteBranchMap.get(commit)!.push(branchName);
+					});
+				
+				console.log('Found remote refs from state:', remoteBranchMap.size, 'unique commits');
+				return remoteBranchMap;
+			}
+			
+			return remoteBranchMap;
+		}
+	} catch (error) {
+		console.log('Failed to get remote branches via Git API:', error);
+		return remoteBranchMap;
 	}
 }
 
@@ -763,52 +827,44 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
                 }
             }
 
-            // Get commit history - prefer git command for consistency
+            // Get commit history using Git API only
             let commitHistory: Array<{hash: string, date: string, message: string, displayText: string}> = [];
-            try {
-                const { stdout: commits } = await execAsync(
-                    `git log --oneline --pretty=format:"%H|%cd|%s" --date=format:"%Y-%m-%d %H:%M:%S" -n 20`, 
-                    { cwd: workspacePath }
-                );
-                
-                commitHistory = commits.split('\n')
-                    .filter(line => line.trim())
-                    .map(line => {
-                        const [hash, date, ...messageParts] = line.split('|');
-                        const message = messageParts.join('|').substring(0, 50);
-                        const shortHash = hash.substring(0, 8);
+            if (repo) {
+                try {
+                    // Get remote branch mapping first
+                    const remoteBranchMap = await getRemoteBranchMapping(repo);
+                    
+                    const commits = await repo.log({ maxEntries: 20 });
+                    commitHistory = commits.map((commit: Commit) => {
+                        const date = commit.authorDate ? commit.authorDate.toISOString().replace('T', ' ').substring(0, 19) : 'unknown';
+                        const message = commit.message.split('\n')[0].substring(0, 50);
+                        const shortHash = commit.hash.substring(0, 8);
+                        
+                        // Check if this commit is the tip of any remote branches
+                        const remoteBranches = remoteBranchMap.get(commit.hash) || [];
+                        const remoteBranchText = remoteBranches.length > 0 ? ` [${remoteBranches.join(', ')}]` : '';
+                        
                         return {
-                            hash,
+                            hash: commit.hash,
                             date,
                             message,
-                            displayText: `${date} (${shortHash}) ${message}`
+                            displayText: `${date} (${shortHash}) ${message}${remoteBranchText}`
                         };
-                    })
-                    .slice(1); // 最新コミット（インデックス0）を除外
-                console.log('Commit history via git command:', commitHistory.length, 'commits (excluding latest)');
-            } catch (error) {
-                console.log('Failed to get commit history via git command:', error);
-                // If git command fails, try VS Code API as backup
-                if (repo) {
-                    try {
-                        const commits = await repo.log({ maxEntries: 20 });
-                        commitHistory = commits.map((commit: Commit) => {
-                            const date = commit.authorDate ? commit.authorDate.toISOString().replace('T', ' ').substring(0, 19) : 'unknown';
-                            const message = commit.message.split('\n')[0].substring(0, 50);
-                            const shortHash = commit.hash.substring(0, 8);
-                            return {
-                                hash: commit.hash,
-                                date,
-                                message,
-                                displayText: `${date} (${shortHash}) ${message}`
-                            };
-                        }).slice(1); // 最新コミット（インデックス0）を除外
-                        console.log('Commit history via VS Code API:', commitHistory.length, 'commits (excluding latest)');
-                    } catch (apiError) {
-                        console.log('Failed to get commit history via VS Code API:', apiError);
-                    }
+                    }).slice(1); // 最新コミット（インデックス0）を除外
+                    console.log('Commit history via Git API:', commitHistory.length, 'commits (excluding latest)');
+                } catch (apiError) {
+                    console.log('Failed to get commit history via Git API:', apiError);
                 }
+            } else {
+                console.log('No repository available for commit history');
             }
+
+            // Get remote branches using Git API - now only for standalone remote branches (not in commit history)
+            let remoteBranches: Array<{name: string, commit: string, displayText: string}> = [];
+            // We no longer add remote branches as separate options since they're now integrated into commit history
+
+            // Combine commit history (which now includes remote branch info) 
+            const comparisonOptions = [...commitHistory];
 
             // Get repository status - prefer git command for accuracy
             let status = '';
@@ -851,7 +907,7 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
                     currentBranch: currentBranch + apiIndicator,
                     latestCommit: latestCommit,
                     status: status,
-                    commitHistory: commitHistory
+                    commitHistory: comparisonOptions
                 }
             });
 
