@@ -1,0 +1,191 @@
+{
+  "name": "diff-lens",
+  "displayName": "DiffLens",
+  "description": "AI-powered git diff code review using AWS Bedrock or VS Code Language Models",
+  "version": "0.0.2",
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "diff-lens.reviewCode",
+        "title": "Review Code with AI",
+        "category": "DiffLens"
+      },
+      {
+        "command": "diff-lens.previewDiff",
+        "title": "Preview Git Diff",
+        "category": "DiffLens",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "diff-lens.openSettings",
+        "title": "Open Settings",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "diff-lens.toggleSettings",
+        "title": "Toggle Settings",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "views": {
+      "diff-lens-view": [
+        {
+          "id": "diff-lens-settings",
+          "name": "Settings",
+          "type": "webview",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "diff-lens-view",
+          "title": "DiffLens",
+          "icon": "resources/bedrock-icon.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "diff-lens.toggleSettings",
+          "when": "view == diff-lens-settings",
+          "group": "navigation"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "diff-lens-settings",
+        "contents": "Welcome to DiffLens!\n\nConfigure your AI provider settings to start automated code reviews.\n\n[Open Settings](command:diff-lens.openSettings)\n\nSupported AI providers:\n• AWS Bedrock\n• VS Code Language Model API\n\nMake sure you have a git repository in your workspace.",
+        "when": "workspaceFolderCount > 0"
+      }
+    ],
+    "configuration": {
+      "title": "DiffLens",
+      "properties": {
+        "diffLens.systemPrompt": {
+          "type": "string",
+          "default": "You are a senior software engineer conducting a code review. Please analyze the provided git diff and provide constructive feedback focusing on code quality, security, performance, and best practices.",
+          "description": "System prompt to be sent to the AI model"
+        },
+        "diffLens.reviewPerspective": {
+          "type": "string",
+          "default": "Focus on code quality, security vulnerabilities, performance issues, and adherence to best practices. Provide specific suggestions for improvement.",
+          "description": "Review perspective/criteria for code analysis"
+        },
+        "diffLens.contextLines": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Number of context lines to show before and after changes in git diff (equivalent to git diff -U option)"
+        },
+        "diffLens.excludeDeletes": {
+          "type": "boolean",
+          "default": true,
+          "description": "Exclude deleted files and lines from git diff output (show only added and modified files)"
+        },
+        "diffLens.fileExtensions": {
+          "type": "string",
+          "default": "",
+          "description": "File extensions to include in diff output (e.g., '*.js *.ts *.py'). Leave empty to include all files. Uses git pathspec format."
+        },
+        "diffLens.llmProvider": {
+          "type": "string",
+          "default": "bedrock",
+          "enum": ["bedrock", "vscode-lm"],
+          "enumDescriptions": [
+            "AWS Bedrock",
+            "VS Code Language Model API"
+          ],
+          "description": "LLM provider to use for code review"
+        },
+        "diffLens.awsAccessKey": {
+          "type": "string",
+          "default": "",
+          "description": "AWS Access Key ID for Bedrock access (required when using AWS Bedrock)",
+          "scope": "application"
+        },
+        "diffLens.awsSecretKey": {
+          "type": "string",
+          "default": "",
+          "description": "AWS Secret Access Key for Bedrock access (required when using AWS Bedrock)",
+          "scope": "application"
+        },
+        "diffLens.awsRegion": {
+          "type": "string",
+          "default": "us-east-1",
+          "description": "AWS region for Bedrock service (used when provider is AWS Bedrock)"
+        },
+        "diffLens.modelName": {
+          "type": "string",
+          "default": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+          "description": "Bedrock model name to use for code review (used when provider is AWS Bedrock)"
+        },
+        "diffLens.vscodeLmVendor": {
+          "type": "string",
+          "default": "copilot",
+          "description": "VS Code LM vendor (e.g., 'copilot') - used when provider is vscode-lm"
+        },
+        "diffLens.vscodeLmFamily": {
+          "type": "string",
+          "default": "gpt-4o",
+          "description": "VS Code LM model family (e.g., 'gpt-4o', 'gpt-3.5-turbo') - used when provider is vscode-lm"
+        },
+        "diffLens.interfaceLanguage": {
+          "type": "string",
+          "default": "en",
+          "enum": ["en", "ja"],
+          "enumDescriptions": [
+            "English",
+            "Japanese (日本語)"
+          ],
+          "description": "Interface language for the extension"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.19.2",
+    "@types/vscode": "^1.101.0",
+    "@typescript-eslint/eslint-plugin": "^7.14.1",
+    "@typescript-eslint/parser": "^7.11.0",
+    "@vscode/test-cli": "^0.0.9",
+    "@vscode/test-electron": "^2.4.0",
+    "esbuild": "^0.21.5",
+    "eslint": "^8.57.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.4.5"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.839.0"
+  }
+}
