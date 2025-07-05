@@ -53,7 +53,7 @@
         {
           "id": "diff-lens-view",
           "title": "DiffLens",
-          "icon": "resources/bedrock-icon.svg"
+          "icon": "resources/icon.svg"
         }
       ]
     },

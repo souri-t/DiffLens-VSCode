@@ -307,8 +307,8 @@ const MESSAGES: Messages = {
         ja: '変更箇所の前後に表示する変更されていない行数 (デフォルト: 50)'
     },
     'diff.excludeDeletes': {
-        en: 'Exclude deleted files and lines from diff output',
-        ja: '削除されたファイルと行を差分出力から除外'
+        en: 'Exclude deleted files from diff output',
+        ja: '削除されたファイルを差分出力から除外'
     },
     'diff.excludeDeletesDesc': {
         en: 'When checked, only added and modified files will be shown in diff output (--diff-filter=AM)',
