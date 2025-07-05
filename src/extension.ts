@@ -399,250 +399,6 @@ function parseFileExtensionsFilter(fileExtensions: string): string[] {
 	return result;
 }
 
-// Get git diff from current branch to specific commit using Git API with git command fallback
-async function getGitDiffFromCommit(workspaceFolder: string, commitHash: string, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<string> {
-	try {
-		logGitOperation('getGitDiffFromCommit: Starting with parameters', {
-			workspaceFolder,
-			commitHash: commitHash.substring(0, 8),
-			contextLines,
-			excludeDeletes,
-			fileExtensions
-		});
-		
-		// First try to use VS Code Git API for repository validation and commit info
-		const workspaceFolderObj = vscode.workspace.workspaceFolders?.find(folder => 
-			folder.uri.fsPath === workspaceFolder
-		);
-		
-		if (workspaceFolderObj) {
-			let repository = await getGitRepository(workspaceFolderObj);
-			if (!repository) {
-				logGitOperation('getGitDiffFromCommit: Repository not found with cache, trying force refresh');
-				repository = await getGitRepository(workspaceFolderObj, true);
-			}
-			
-			if (repository) {
-				logGitOperation('getGitDiffFromCommit: Using Git API for repository operations');
-				
-				try {
-					// Validate commit exists
-					const commit = await repository.getCommit(commitHash);
-					logGitOperation('getGitDiffFromCommit: Commit validated', {
-						hash: commit.hash.substring(0, 8),
-						message: commit.message.substring(0, 50)
-					});
-					
-					// Get changes between commits
-					const changes = await getChangesFromGitAPI(repository, commitHash, 'HEAD');
-					
-					// Filter changes by file extensions if specified
-					let filteredChanges = changes;
-					if (fileExtensions) {
-						const pathspecs = parseFileExtensionsFilter(fileExtensions);
-						if (pathspecs.length > 0) {
-							filteredChanges = changes.filter(change => {
-								const relativePath = vscode.workspace.asRelativePath(change.uri);
-								return pathspecs.some(pathspec => {
-									// Simple pattern matching (not as sophisticated as git pathspec)
-									if (pathspec.includes('**')) {
-										const pattern = pathspec.replace('**/', '').replace('*', '.*');
-										return new RegExp(pattern + '$').test(relativePath);
-									} else {
-										const pattern = pathspec.replace('*', '.*');
-										return new RegExp(pattern + '$').test(relativePath);
-									}
-								});
-							});
-						}
-					}
-					
-					if (filteredChanges.length === 0) {
-						const filterInfo = fileExtensions ? ` (filtered by: ${fileExtensions})` : '';
-						throw new Error(`No changes found between commit ${commitHash} and current HEAD${filterInfo}`);
-					}
-					
-					// Convert changes to diff format - note: this is limited compared to git diff
-					const diff = await convertChangesToDiff(filteredChanges, contextLines, excludeDeletes);
-					
-					if (diff.trim()) {
-						logGitOperation('getGitDiffFromCommit: Successfully generated diff using Git API');
-						return cleanupGitDiff(diff);
-					}
-				} catch (apiError) {
-					logGitOperation('getGitDiffFromCommit: Git API approach failed, falling back to git command', apiError);
-				}
-			}
-		}
-		
-		// Fallback to git command approach for complete diff functionality
-		logGitOperation('getGitDiffFromCommit: Using git command fallback for complete diff');
-		let gitCommand = `git diff -U${contextLines}`;
-		if (excludeDeletes) {
-			gitCommand += ' --diff-filter=AM';
-		}
-		gitCommand += ` ${commitHash}...HEAD`;
-		
-		// Add file extension filter if specified
-		const pathspecs = parseFileExtensionsFilter(fileExtensions);
-		if (pathspecs.length > 0) {
-			gitCommand += ' -- ' + pathspecs.join(' ');
-			logGitOperation('getGitDiffFromCommit: Added pathspecs to command', pathspecs);
-		}
-		
-		logGitOperation('getGitDiffFromCommit: Executing git command', gitCommand);
-		logGitOperation('getGitDiffFromCommit: Working directory', workspaceFolder);
-		
-		const { stdout: diff, stderr } = await execAsync(gitCommand, { cwd: workspaceFolder });
-		
-		if (stderr) {
-			logGitOperation('getGitDiffFromCommit: Git command stderr', stderr);
-		}
-		
-		logGitOperation('getGitDiffFromCommit: Git command output length', diff.length);
-		logGitOperation('getGitDiffFromCommit: First 200 chars of output', diff.substring(0, 200));
-		
-		if (!diff.trim()) {
-			const filterInfo = pathspecs.length > 0 ? ` (filtered by: ${pathspecs.join(', ')})` : '';
-			const errorMessage = `No changes found between commit ${commitHash} and current HEAD${filterInfo}`;
-			logGitOperation('getGitDiffFromCommit: Error -', errorMessage);
-			throw new Error(errorMessage);
-		}
-		
-		// Clean up the diff output
-		const cleanedDiff = cleanupGitDiff(diff);
-		logGitOperation('getGitDiffFromCommit: Successfully returned cleaned diff with lines', cleanedDiff.split('\n').length);
-		return cleanedDiff;
-	} catch (error) {
-		logGitOperation('getGitDiffFromCommit: Exception occurred', error);
-		throw new Error(`Failed to get git diff from commit: ${error}`);
-	}
-}
-
-// Get git diff from current branch to origin using Git API with git command fallback
-async function getGitDiff(workspaceFolder: string, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<string> {
-	try {
-		logGitOperation('getGitDiff: Starting with parameters', {
-			workspaceFolder,
-			contextLines,
-			excludeDeletes,
-			fileExtensions
-		});
-		
-		// First try to use VS Code Git API for repository operations
-		const workspaceFolderObj = vscode.workspace.workspaceFolders?.find(folder => 
-			folder.uri.fsPath === workspaceFolder
-		);
-		
-		if (workspaceFolderObj) {
-			let repository = await getGitRepository(workspaceFolderObj);
-			if (!repository) {
-				logGitOperation('getGitDiff: Repository not found with cache, trying force refresh');
-				repository = await getGitRepository(workspaceFolderObj, true);
-			}
-			
-			if (repository) {
-				logGitOperation('getGitDiff: Using Git API for repository operations');
-				
-				try {
-					// Get the last commit
-					const commits = await repository.log({ maxEntries: 2 });
-					if (commits.length >= 2) {
-						const currentCommit = commits[0];
-						const previousCommit = commits[1];
-						
-						logGitOperation('getGitDiff: Found commits for comparison', {
-							current: currentCommit.hash.substring(0, 8),
-							previous: previousCommit.hash.substring(0, 8)
-						});
-						
-						// Get changes between the two commits
-						const changes = await getChangesFromGitAPI(repository, previousCommit.hash, currentCommit.hash);
-						
-						// Filter changes by file extensions if specified
-						let filteredChanges = changes;
-						if (fileExtensions) {
-							const pathspecs = parseFileExtensionsFilter(fileExtensions);
-							if (pathspecs.length > 0) {
-								filteredChanges = changes.filter(change => {
-									const relativePath = vscode.workspace.asRelativePath(change.uri);
-									return pathspecs.some(pathspec => {
-										// Simple pattern matching (not as sophisticated as git pathspec)
-										if (pathspec.includes('**')) {
-											const pattern = pathspec.replace('**/', '').replace('*', '.*');
-											return new RegExp(pattern + '$').test(relativePath);
-										} else {
-											const pattern = pathspec.replace('*', '.*');
-											return new RegExp(pattern + '$').test(relativePath);
-										}
-									});
-								});
-							}
-						}
-						
-						if (filteredChanges.length === 0) {
-							const filterInfo = fileExtensions ? ` (filtered by: ${fileExtensions})` : '';
-							throw new Error(`No changes found in the last commit${filterInfo}`);
-						}
-						
-						// Convert changes to diff format - note: this is limited compared to git diff
-						const diff = await convertChangesToDiff(filteredChanges, contextLines, excludeDeletes);
-						
-						if (diff.trim()) {
-							logGitOperation('getGitDiff: Successfully generated diff using Git API');
-							return cleanupGitDiff(diff);
-						}
-					}
-				} catch (apiError) {
-					logGitOperation('getGitDiff: Git API approach failed, falling back to git command', apiError);
-				}
-			}
-		}
-		
-		// Fallback to git command approach for complete diff functionality
-		logGitOperation('getGitDiff: Using git command fallback for complete diff');
-		let gitCommand = `git diff -U${contextLines}`;
-		if (excludeDeletes) {
-			gitCommand += ' --diff-filter=AM';
-		}
-		gitCommand += ' HEAD~1...HEAD';
-		
-		// Add file extension filter if specified
-		const pathspecs = parseFileExtensionsFilter(fileExtensions);
-		if (pathspecs.length > 0) {
-			gitCommand += ' -- ' + pathspecs.join(' ');
-			logGitOperation('getGitDiff: Added pathspecs to command', pathspecs);
-		}
-		
-		logGitOperation('getGitDiff: Executing git command', gitCommand);
-		logGitOperation('getGitDiff: Working directory', workspaceFolder);
-		
-		const { stdout: diff, stderr } = await execAsync(gitCommand, { cwd: workspaceFolder });
-		
-		if (stderr) {
-			logGitOperation('getGitDiff: Git command stderr', stderr);
-		}
-		
-		logGitOperation('getGitDiff: Git command output length', diff.length);
-		logGitOperation('getGitDiff: First 200 chars of output', diff.substring(0, 200));
-		
-		if (!diff.trim()) {
-			const filterInfo = pathspecs.length > 0 ? ` (filtered by: ${pathspecs.join(', ')})` : '';
-			const errorMessage = `No changes found in the last commit${filterInfo}`;
-			logGitOperation('getGitDiff: Error -', errorMessage);
-			throw new Error(errorMessage);
-		}
-		
-		// Clean up the diff output
-		const cleanedDiff = cleanupGitDiff(diff);
-		logGitOperation('getGitDiff: Successfully returned cleaned diff with lines', cleanedDiff.split('\n').length);
-		return cleanedDiff;
-	} catch (error) {
-		logGitOperation('getGitDiff: Exception occurred', error);
-		throw new Error(`Failed to get git diff: ${error}`);
-	}
-}
-
 // Send diff to AWS Bedrock for review
 async function reviewWithBedrock(diff: string, config: ReviewConfig): Promise<{modelName: string, review: string}> {
 	try {
@@ -791,57 +547,87 @@ ${reviewResult.review}`;
 	await vscode.window.showTextDocument(doc);
 }
 
-// Show git diff in a new document for preview (deprecated - will be replaced by commit selection)
+// Show git diff for latest changes in a new document for preview - uses native git diff command
 async function showDiffPreview(workspacePath: string, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<void> {
 	try {
-		const diff = await getGitDiff(workspacePath, contextLines, excludeDeletes, fileExtensions);
+		logGitOperation('showDiffPreview: Starting with parameters', {
+			workspacePath,
+			contextLines,
+			excludeDeletes,
+			fileExtensions
+		});
+
+		// Generate unified diff using native git command
+		const diff = await generateNativeGitDiff(workspacePath, null, contextLines, excludeDeletes, fileExtensions);
 		
 		const filterInfo = fileExtensions ? `\nFile Extensions Filter: ${fileExtensions}` : '';
+		const excludeInfo = excludeDeletes ? ' (excludes deleted files)' : '';
+		
 		const previewContent = `# Git Diff Preview
 
 **Comparison:** Current HEAD vs Previous Commit  
-**Context Lines:** ${contextLines}  
-**Exclude Deletes:** ${excludeDeletes}${filterInfo}  
+**Context Lines (git diff -U${contextLines}):** ${contextLines}  
+**Options:** ${excludeDeletes ? 'Exclude deleted files' : 'Include all changes'}${filterInfo}  
 **Generated at:** ${new Date().toLocaleString()}
 
 ---
 
-${formatDiffAsMarkdown(diff)}`;
+\`\`\`diff
+${diff}
+\`\`\``;
 
 		const doc = await vscode.workspace.openTextDocument({
 			content: previewContent,
 			language: 'markdown'
 		});
 		await vscode.window.showTextDocument(doc);
+		
+		logGitOperation('showDiffPreview: Preview document created successfully');
 	} catch (error) {
+		logGitOperation('showDiffPreview: Error occurred', error);
 		vscode.window.showErrorMessage(`Error showing diff preview: ${error}`);
 	}
 }
 
-// Show git diff from specific commit in a new document for preview
+// Show git diff from specific commit in a new document for preview - uses native git diff command
 async function showDiffPreviewFromCommit(workspacePath: string, commitHash: string, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<void> {
 	try {
-		const diff = await getGitDiffFromCommit(workspacePath, commitHash, contextLines, excludeDeletes, fileExtensions);
+		logGitOperation('showDiffPreviewFromCommit: Starting with parameters', {
+			workspacePath,
+			commitHash: commitHash.substring(0, 8),
+			contextLines,
+			excludeDeletes,
+			fileExtensions
+		});
+
+		// Generate unified diff using native git command
+		const diff = await generateNativeGitDiff(workspacePath, commitHash, contextLines, excludeDeletes, fileExtensions);
 		const shortHash = commitHash.substring(0, 8);
 		
 		const filterInfo = fileExtensions ? `\nFile Extensions Filter: ${fileExtensions}` : '';
+		
 		const previewContent = `# Git Diff Preview
 
 **Comparison:** Current HEAD vs Commit ${shortHash}  
-**Context Lines:** ${contextLines}  
-**Exclude Deletes:** ${excludeDeletes}${filterInfo}  
+**Context Lines (git diff -U${contextLines}):** ${contextLines}  
+**Options:** ${excludeDeletes ? 'Exclude deleted files' : 'Include all changes'}${filterInfo}  
 **Generated at:** ${new Date().toLocaleString()}
 
 ---
 
-${formatDiffAsMarkdown(diff)}`;
+\`\`\`diff
+${diff}
+\`\`\``;
 
 		const doc = await vscode.workspace.openTextDocument({
 			content: previewContent,
 			language: 'markdown'
 		});
 		await vscode.window.showTextDocument(doc);
+		
+		logGitOperation('showDiffPreviewFromCommit: Preview document created successfully');
 	} catch (error) {
+		logGitOperation('showDiffPreviewFromCommit: Error occurred', error);
 		vscode.window.showErrorMessage(`Error showing diff preview: ${error}`);
 	}
 }
@@ -1101,6 +887,66 @@ async function convertChangesToDiff(changes: Change[], contextLines: number = 50
 	}
 }
 
+// Generate native git diff using git diff --unified command (completely replaces old diff logic)
+async function generateNativeGitDiff(workspacePath: string, compareToCommit: string | null, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<string> {
+	try {
+		logGitOperation('generateNativeGitDiff: Starting with parameters', {
+			workspacePath,
+			compareToCommit: compareToCommit ? compareToCommit.substring(0, 8) : 'previous commit',
+			contextLines,
+			excludeDeletes,
+			fileExtensions
+		});
+
+		// Build git diff command - exactly like the git diff --unified=<n> command
+		let gitCommand = `git -C "${workspacePath}" diff --unified=${contextLines}`;
+
+		// Add delete filter if requested (equivalent to --diff-filter=AM)
+		if (excludeDeletes) {
+			gitCommand += ' --diff-filter=AM';
+		}
+
+		// Determine what to compare
+		if (compareToCommit) {
+			// Compare specific commit to HEAD
+			gitCommand += ` ${compareToCommit}..HEAD`;
+		} else {
+			// Compare last commit to current HEAD (default behavior)
+			gitCommand += ' HEAD~1..HEAD';
+		}
+
+		// Add file extension filters using pathspec if specified
+		if (fileExtensions) {
+			const pathspecs = parseFileExtensionsFilter(fileExtensions);
+			if (pathspecs.length > 0) {
+				// Add pathspec patterns to limit diff to specific file types
+				gitCommand += ' -- ' + pathspecs.join(' ');
+			}
+		}
+
+		logGitOperation('generateNativeGitDiff: Executing git command', gitCommand);
+
+		// Execute the git diff command
+		const { stdout: diff } = await execAsync(gitCommand);
+
+		if (!diff.trim()) {
+			const filterInfo = fileExtensions ? ` with filter "${fileExtensions}"` : '';
+			const compareInfo = compareToCommit ? ` between commit ${compareToCommit.substring(0, 8)} and HEAD` : ' in the latest commit';
+			throw new Error(`No changes found${compareInfo}${filterInfo}`);
+		}
+
+		logGitOperation('generateNativeGitDiff: Successfully generated diff', {
+			linesCount: diff.split('\n').length,
+			sizeBytes: diff.length
+		});
+
+		return diff;
+	} catch (error) {
+		logGitOperation('generateNativeGitDiff: Error occurred', error);
+		throw new Error(`Failed to generate git diff: ${error}`);
+	}
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	console.log('DiffLens extension is now active!');
 
@@ -1293,10 +1139,8 @@ async function runCodeReview(selectedCommit?: string, customPrompts?: {systemPro
 		}, async (progress) => {
 			progress.report({ increment: 0, message: 'Getting git diff...' });
 
-			// Get git diff
-			const diff = selectedCommit 
-				? await getGitDiffFromCommit(workspacePath, selectedCommit, config.contextLines, config.excludeDeletes, config.fileExtensions)
-				: await getGitDiff(workspacePath, config.contextLines, config.excludeDeletes, config.fileExtensions);
+			// Get git diff using native git command (same as preview function)
+			const diff = await generateNativeGitDiff(workspacePath, selectedCommit || null, config.contextLines, config.excludeDeletes, config.fileExtensions);
 			
 			progress.report({ increment: 50, message: `Sending to ${config.llmProvider.toUpperCase()} for review...` });
 
