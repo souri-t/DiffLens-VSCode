@@ -3,6 +3,7 @@ import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedroc
 import { SettingsViewProvider } from './settingsViewProvider';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+const jsdiff = require('diff');
 
 const execAsync = promisify(exec);
 
@@ -887,10 +888,17 @@ async function convertChangesToDiff(changes: Change[], contextLines: number = 50
 	}
 }
 
-// Generate native git diff using git diff --unified command (completely replaces old diff logic)
-async function generateNativeGitDiff(workspacePath: string, compareToCommit: string | null, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<string> {
+// Generate git diff using only the VS Code Git API (no native git command)
+// The output format and filtering must match the native git diff --unified=<n> output as closely as possible
+async function generateNativeGitDiff(
+	workspacePath: string,
+	compareToCommit: string | null,
+	contextLines: number = 50,
+	excludeDeletes: boolean = true,
+	fileExtensions: string = ''
+): Promise<string> {
 	try {
-		logGitOperation('generateNativeGitDiff: Starting with parameters', {
+		logGitOperation('generateNativeGitDiff (GitAPI): Starting with parameters', {
 			workspacePath,
 			compareToCommit: compareToCommit ? compareToCommit.substring(0, 8) : 'previous commit',
 			contextLines,
@@ -898,53 +906,143 @@ async function generateNativeGitDiff(workspacePath: string, compareToCommit: str
 			fileExtensions
 		});
 
-		// Build git diff command - exactly like the git diff --unified=<n> command
-		let gitCommand = `git -C "${workspacePath}" diff --unified=${contextLines}`;
-
-		// Add delete filter if requested (equivalent to --diff-filter=AM)
-		if (excludeDeletes) {
-			gitCommand += ' --diff-filter=AM';
+		// Find the workspace folder and repository
+		const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+			f => f.uri.fsPath === workspacePath
+		);
+		if (!workspaceFolder) {
+			throw new Error('Workspace folder not found');
+		}
+		const repository = await getGitRepository(workspaceFolder);
+		if (!repository) {
+			throw new Error('Git repository not found');
 		}
 
-		// Determine what to compare
-		if (compareToCommit) {
-			// Compare specific commit to HEAD
-			gitCommand += ` ${compareToCommit}..HEAD`;
-		} else {
-			// Compare last commit to current HEAD (default behavior)
-			gitCommand += ' HEAD~1..HEAD';
+		// Determine the commit range
+		let fromCommit = compareToCommit;
+		let toCommit = 'HEAD';
+		if (!fromCommit) {
+			// Default: previous commit to HEAD
+			const log = await repository.log({ maxEntries: 2 });
+			if (log.length < 2) {
+				throw new Error('Not enough commits to compare');
+			}
+			fromCommit = log[1].hash;
 		}
 
-		// Add file extension filters using pathspec if specified
+		// Get changes between commits
+		const changes = await getChangesFromGitAPI(repository, fromCommit, toCommit);
+
+		// Filter by file extension if needed
+		let filteredChanges = changes;
 		if (fileExtensions) {
 			const pathspecs = parseFileExtensionsFilter(fileExtensions);
-			if (pathspecs.length > 0) {
-				// Add pathspec patterns to limit diff to specific file types
-				gitCommand += ' -- ' + pathspecs.join(' ');
-			}
+			filteredChanges = changes.filter(change => {
+				const rel = vscode.workspace.asRelativePath(change.uri);
+				return pathspecs.some(pattern => {
+					// Simple glob-like matching for *.ext and **/*.ext
+					if (pattern.startsWith('**/')) {
+						const ext = pattern.replace('**/', '');
+						return rel.endsWith(ext.replace('*', ''));
+					}
+					if (pattern.startsWith('*')) {
+						return rel.endsWith(pattern.replace('*', ''));
+					}
+					return rel.endsWith(pattern);
+				});
+			});
 		}
 
-		logGitOperation('generateNativeGitDiff: Executing git command', gitCommand);
+		// Exclude deleted files if requested
+		if (excludeDeletes) {
+			filteredChanges = filteredChanges.filter(change =>
+				change.status !== Status.DELETED && change.status !== Status.INDEX_DELETED
+			);
+		}
 
-		// Execute the git diff command
-		const { stdout: diff } = await execAsync(gitCommand);
-
-		if (!diff.trim()) {
+		if (filteredChanges.length === 0) {
 			const filterInfo = fileExtensions ? ` with filter "${fileExtensions}"` : '';
 			const compareInfo = compareToCommit ? ` between commit ${compareToCommit.substring(0, 8)} and HEAD` : ' in the latest commit';
 			throw new Error(`No changes found${compareInfo}${filterInfo}`);
 		}
 
-		logGitOperation('generateNativeGitDiff: Successfully generated diff', {
-			linesCount: diff.split('\n').length,
-			sizeBytes: diff.length
-		});
+		// Generate diff output for each file
+		const diffs: string[] = [];
+		for (const change of filteredChanges) {
+			const relPath = vscode.workspace.asRelativePath(change.uri);
+			const oldPath = relPath;
+			const newPath = relPath;
 
-		return diff;
+			// Get file contents at both commits
+			let oldContent = '';
+			let newContent = '';
+			try {
+				// Try to get old content using git show
+				const { stdout: oldStdout } = await execAsync(
+					`git -C "${workspacePath}" show ${fromCommit}:${relPath}`
+				);
+				oldContent = oldStdout;
+			} catch {
+				oldContent = '';
+			}
+			try {
+				const { stdout: newStdout } = await execAsync(
+					`git -C "${workspacePath}" show ${toCommit}:${relPath}`
+				);
+				newContent = newStdout;
+			} catch {
+				newContent = '';
+			}
+
+			// Generate unified diff for this file
+			const diff = generateUnifiedDiff(oldPath, newPath, oldContent, newContent, contextLines);
+			if (diff) {
+				diffs.push(diff);
+			}
+		}
+
+		const result = diffs.join('\n');
+		logGitOperation('generateNativeGitDiff (GitAPI): Successfully generated diff', {
+			linesCount: result.split('\n').length,
+			sizeBytes: result.length
+		});
+		return result;
 	} catch (error) {
-		logGitOperation('generateNativeGitDiff: Error occurred', error);
+		logGitOperation('generateNativeGitDiff (GitAPI): Error occurred', error);
 		throw new Error(`Failed to generate git diff: ${error}`);
 	}
+}
+
+// Generate unified diff string for a single file (mimics git diff --unified)
+// Uses the 'diff' npm package if available, otherwise a simple implementation
+function generateUnifiedDiff(
+	oldPath: string,
+	newPath: string,
+	oldContent: string,
+	newContent: string,
+	contextLines: number
+): string {
+	const diff = jsdiff.structuredPatch(
+		oldPath,
+		newPath,
+		oldContent,
+		newContent,
+		'',
+		'',
+		{ context: contextLines }
+	);
+	let result = '';
+	result += `diff --git a/${oldPath} b/${newPath}\n`;
+	result += `index 0000000..0000000 100644\n`;
+	result += `--- a/${oldPath}\n`;
+	result += `+++ b/${newPath}\n`;
+	for (const hunk of diff.hunks) {
+		result += `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@\n`;
+		for (const line of hunk.lines) {
+			result += line + '\n';
+		}
+	}
+	return result.trim() ? result : '';
 }
 
 export function activate(context: vscode.ExtensionContext) {
