@@ -776,7 +776,7 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
                             hash: commit.hash,
                             date,
                             message,
-                            displayText: `${date} (${shortHash}) ${message}${remoteBranchText}`
+                            displayText: `${date} (${shortHash})${remoteBranchText} ${message}`
                         };
                     }).slice(1); // 最新コミット（インデックス0）を除外
                     console.log('Commit history via Git API:', commitHistory.length, 'commits (excluding latest)');
