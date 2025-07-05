@@ -548,48 +548,6 @@ ${reviewResult.review}`;
 	await vscode.window.showTextDocument(doc);
 }
 
-// Show git diff for latest changes in a new document for preview - uses native git diff command
-async function showDiffPreview(workspacePath: string, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<void> {
-	try {
-		logGitOperation('showDiffPreview: Starting with parameters', {
-			workspacePath,
-			contextLines,
-			excludeDeletes,
-			fileExtensions
-		});
-
-		// Generate unified diff using native git command
-		const diff = await generateNativeGitDiff(workspacePath, null, contextLines, excludeDeletes, fileExtensions);
-		
-		const filterInfo = fileExtensions ? `\nFile Extensions Filter: ${fileExtensions}` : '';
-		const excludeInfo = excludeDeletes ? ' (excludes deleted files)' : '';
-		
-		const previewContent = `# Git Diff Preview
-
-**Comparison:** Current HEAD vs Previous Commit  
-**Context Lines (git diff -U${contextLines}):** ${contextLines}  
-**Options:** ${excludeDeletes ? 'Exclude deleted files' : 'Include all changes'}${filterInfo}  
-**Generated at:** ${new Date().toLocaleString()}
-
----
-
-\`\`\`diff
-${diff}
-\`\`\``;
-
-		const doc = await vscode.workspace.openTextDocument({
-			content: previewContent,
-			language: 'markdown'
-		});
-		await vscode.window.showTextDocument(doc);
-		
-		logGitOperation('showDiffPreview: Preview document created successfully');
-	} catch (error) {
-		logGitOperation('showDiffPreview: Error occurred', error);
-		vscode.window.showErrorMessage(`Error showing diff preview: ${error}`);
-	}
-}
-
 // Show git diff from specific commit in a new document for preview - uses native git diff command
 async function showDiffPreviewFromCommit(workspacePath: string, commitHash: string, contextLines: number = 50, excludeDeletes: boolean = true, fileExtensions: string = ''): Promise<void> {
 	try {
@@ -631,19 +589,6 @@ ${diff}
 		logGitOperation('showDiffPreviewFromCommit: Error occurred', error);
 		vscode.window.showErrorMessage(`Error showing diff preview: ${error}`);
 	}
-}
-
-// Clean up git diff output by removing unwanted metadata
-function cleanupGitDiff(diff: string): string {
-	return diff
-		// Remove "\ No newline at end of file" messages
-		.replace(/\\ No newline at end of file\n?/g, '')
-		// Remove any trailing whitespace from lines
-		.split('\n')
-		.map(line => line.trimEnd())
-		.join('\n')
-		// Remove excessive empty lines at the end
-		.replace(/\n{3,}$/, '\n\n');
 }
 
 // Convert git diff output to markdown format for better readability
@@ -768,24 +713,6 @@ async function getAvailableVSCodeLMFamilies(): Promise<string[]> {
 	}
 }
 
-// Get file content at specific commit using VS Code Git API
-async function getFileContentAtCommit(repository: Repository, filePath: string, commitHash: string): Promise<string | null> {
-	try {
-		// VS Code Git API doesn't directly provide file content at specific commits
-		// We need to use the workspace API to get the file content
-		// This is a limitation of the current VS Code Git API
-		// For now, we'll return null and indicate this limitation
-		logGitOperation('getFileContentAtCommit: VS Code Git API limitation - cannot get file content at specific commit', {
-			filePath,
-			commitHash: commitHash.substring(0, 8)
-		});
-		return null;
-	} catch (error) {
-		logGitOperation('getFileContentAtCommit: Failed to get file content', error);
-		return null;
-	}
-}
-
 // Get changes between commits using VS Code Git API
 async function getChangesFromGitAPI(repository: Repository, fromCommit: string, toCommit: string = 'HEAD'): Promise<Change[]> {
 	try {
@@ -805,85 +732,6 @@ async function getChangesFromGitAPI(repository: Repository, fromCommit: string, 
 		return changes;
 	} catch (error) {
 		logGitOperation('getChangesFromGitAPI: Failed to get changes', error);
-		throw error;
-	}
-}
-
-// Convert Change objects to diff format using file system access
-async function convertChangesToDiff(changes: Change[], contextLines: number = 50, excludeDeletes: boolean = true): Promise<string> {
-	try {
-		logGitOperation('convertChangesToDiff: Converting changes to diff format', {
-			changeCount: changes.length,
-			contextLines,
-			excludeDeletes
-		});
-
-		const diffLines: string[] = [];
-
-		for (const change of changes) {
-			// Skip deleted files if excludeDeletes is true
-			if (excludeDeletes && (change.status === Status.DELETED || change.status === Status.INDEX_DELETED)) {
-				logGitOperation('convertChangesToDiff: Skipping deleted file', { file: change.uri.fsPath });
-				continue;
-			}
-
-			try {
-				const filePath = change.uri.fsPath;
-				const relativePath = vscode.workspace.asRelativePath(change.uri);
-				
-				// Add file header
-				diffLines.push(`diff --git a/${relativePath} b/${relativePath}`);
-				
-				// Try to get current file content
-				let newContent = '';
-				try {
-					const document = await vscode.workspace.openTextDocument(change.uri);
-					newContent = document.getText();
-				} catch (error) {
-					logGitOperation('convertChangesToDiff: Failed to read current file content', { 
-						file: filePath, 
-						error 
-					});
-					continue;
-				}
-
-				// For new files, create a simple diff
-				if (change.status === Status.UNTRACKED || change.status === Status.INDEX_ADDED) {
-					const lines = newContent.split('\n');
-					diffLines.push(`+++ b/${relativePath}`);
-					lines.forEach((line, index) => {
-						diffLines.push(`+${line}`);
-					});
-				} else {
-					// For modified files, we can only show the current content as additions
-					// This is a limitation without access to the original content
-					diffLines.push(`+++ b/${relativePath}`);
-					const lines = newContent.split('\n');
-					lines.forEach((line, index) => {
-						// Add context and changed lines
-						diffLines.push(`+${line}`);
-					});
-				}
-				
-				diffLines.push(''); // Empty line between files
-				
-			} catch (error) {
-				logGitOperation('convertChangesToDiff: Failed to process change', { 
-					file: change.uri.fsPath, 
-					error 
-				});
-			}
-		}
-
-		const result = diffLines.join('\n');
-		logGitOperation('convertChangesToDiff: Generated diff', { 
-			lineCount: diffLines.length,
-			contentLength: result.length 
-		});
-
-		return result;
-	} catch (error) {
-		logGitOperation('convertChangesToDiff: Failed to convert changes to diff', error);
 		throw error;
 	}
 }
@@ -1157,15 +1005,14 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		if (selectedCommit) {
-			const config = getConfiguration();
-			console.log('Preview diff with contextLines:', config.contextLines, 'excludeDeletes:', config.excludeDeletes, 'fileExtensions:', config.fileExtensions); // Debug log
-			await showDiffPreviewFromCommit(workspacePath, selectedCommit, config.contextLines, config.excludeDeletes, config.fileExtensions);
-		} else {
-			const config = getConfiguration();
-			console.log('Preview diff with contextLines:', config.contextLines, 'excludeDeletes:', config.excludeDeletes, 'fileExtensions:', config.fileExtensions); // Debug log
-			await showDiffPreview(workspacePath, config.contextLines, config.excludeDeletes, config.fileExtensions);
+		if (!selectedCommit) {
+			return;
 		}
+
+		const config = getConfiguration();
+		console.log('Preview diff with contextLines:', config.contextLines, 'excludeDeletes:', config.excludeDeletes, 'fileExtensions:', config.fileExtensions); // Debug log
+		await showDiffPreviewFromCommit(workspacePath, selectedCommit, config.contextLines, config.excludeDeletes, config.fileExtensions);
+	
 	});
 
 	// Register settings command
